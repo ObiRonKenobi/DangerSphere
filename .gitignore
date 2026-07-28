@@ -1,0 +1,26 @@
+# Environment
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Data cache (persisted locally, not committed)
+data/*.json
+data/*.json.gz
+!data/.gitkeep
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Docker
+*.log

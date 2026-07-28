@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DangerSphere</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;800&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <div id="atmosphere" aria-hidden="true"></div>
+  <div id="globe-container"></div>
+
+  <header class="brand-hero" id="brand-hero">
+    <h1 class="brand-title">DangerSphere</h1>
+    <p class="brand-tagline">Live multi-hazard command surface</p>
+  </header>
+
+  <aside class="hud" id="hud" aria-label="Layer controls">
+    <div class="hud-section">
+      <h2 class="hud-label">Layers</h2>
+      <label class="hud-check"><input type="checkbox" id="layer-earthquakes" checked /> Earthquakes</label>
+      <label class="hud-check"><input type="checkbox" id="layer-wildfires" checked /> Wildfires</label>
+      <label class="hud-check"><input type="checkbox" id="layer-hurricanes" checked /> Hurricanes</label>
+      <label class="hud-check"><input type="checkbox" id="layer-volcanoes" checked /> Volcanoes</label>
+      <label class="hud-check"><input type="checkbox" id="layer-tsunamis" checked /> Tsunamis</label>
+      <label class="hud-check"><input type="checkbox" id="layer-radar" /> Radar</label>
+      <label class="hud-check"><input type="checkbox" id="layer-cities" checked /> Cities</label>
+    </div>
+    <div class="hud-section">
+      <h2 class="hud-label">City Insights</h2>
+      <input type="search" id="city-search" placeholder="Search city…" autocomplete="off" />
+      <ul id="city-results" class="city-results" hidden></ul>
+    </div>
+    <div class="hud-meta" id="hud-meta">
+      <span id="meta-updated">Awaiting cache…</span>
+      <span id="meta-counts"></span>
+    </div>
+  </aside>
+
+  <div class="detail-hud" id="detail-hud" hidden>
+    <button type="button" class="detail-close" id="detail-close" aria-label="Close">×</button>
+    <h3 id="detail-title"></h3>
+    <p id="detail-type" class="detail-type"></p>
+    <p id="detail-time"></p>
+    <p id="detail-mag"></p>
+    <a id="detail-link" href="#" target="_blank" rel="noopener">Source</a>
+  </div>
+
+  <section class="insights-panel" id="insights-panel" aria-hidden="true">
+    <div class="insights-inner">
+      <button type="button" class="back-live" id="btn-back-live">← Back to Live</button>
+      <h2 id="insights-title">City Insights</h2>
+      <p id="insights-subtitle" class="insights-sub"></p>
+      <div id="insights-summaries" class="insights-summaries"></div>
+      <div class="insights-charts">
+        <canvas id="temp-chart" width="640" height="180" aria-label="Temperature chart"></canvas>
+        <canvas id="precip-chart" width="640" height="180" aria-label="Precipitation chart"></canvas>
+      </div>
+      <h3 class="nearby-heading">Nearby live hazards</h3>
+      <ul id="nearby-events" class="nearby-events"></ul>
+    </div>
+  </section>
+
+  <footer class="attrib">
+    Data: USGS · NASA FIRMS · GDACS · Open-Meteo ·
+    <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>
+  </footer>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/": "https://cdn.jsdelivr.net/npm/three@0.160.0/",
+      "globe.gl": "https://cdn.jsdelivr.net/npm/globe.gl@2.33.1/dist/globe.gl.mjs"
+    }
+  }
+  </script>
+  <script type="module" src="/js/main.js"></script>
+</body>
+</html>
