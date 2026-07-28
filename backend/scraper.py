@@ -130,7 +130,7 @@ def _firms_url() -> str:
 async def fetch_nasa_firms(session: aiohttp.ClientSession) -> tuple[list[dict], str]:
     """Fetch wildfire hotspots. Returns (events, status)."""
     if not NASA_FIRMS_MAP_KEY:
-        logger.warning("NASA_FIRMS_MAP_KEY not set — skipping wildfire scrape")
+        logger.warning("NASA_FIRMS_MAP_KEY not set - skipping wildfire scrape")
         return [], "skipped_no_key"
 
     async with session.get(_firms_url()) as resp:
@@ -263,20 +263,18 @@ def _gdacs_type_map(eventlist: str) -> str:
 async def _fetch_gdacs_track(
     session: aiohttp.ClientSession, event_type: str, event_id: str
 ) -> list[list[float]]:
-    """Best-effort track points from GDACS event detail."""
+    """Best-effort track points from GDACS event detail (hard 12s cap)."""
     params = {"eventtype": event_type, "eventid": event_id}
-    try:
+
+    async def _load() -> list[list[float]]:
         async with session.get(GDACS_EVENT_URL, params=params) as resp:
             if resp.status != 200:
                 return []
             data = await resp.json(content_type=None)
-    except Exception:
-        logger.exception("GDACS event detail failed for %s %s", event_type, event_id)
-        return []
 
-    path: list[list[float]] = []
-    # Geometry may be LineString or nested under features
-    if isinstance(data, dict):
+        path: list[list[float]] = []
+        if not isinstance(data, dict):
+            return path
         features = data.get("features")
         if isinstance(features, list):
             for feat in features:
@@ -294,7 +292,24 @@ async def _fetch_gdacs_track(
             for pt in geom.get("coordinates") or []:
                 if len(pt) >= 2:
                     path.append([float(pt[0]), float(pt[1])])
-    return path
+        return path
+
+    try:
+        return await asyncio.wait_for(_load(), timeout=12)
+    except Exception:
+        logger.warning("GDACS track skipped for %s %s", event_type, event_id)
+        return []
+
+
+def _path_from_geometry(feature: dict) -> list[list[float]]:
+    geom = feature.get("geometry") or {}
+    if geom.get("type") == "LineString":
+        return [
+            [float(pt[0]), float(pt[1])]
+            for pt in (geom.get("coordinates") or [])
+            if len(pt) >= 2
+        ]
+    return []
 
 
 async def fetch_gdacs(
@@ -317,7 +332,7 @@ async def fetch_gdacs(
         return []
 
     mapped_type = _gdacs_type_map(eventlist)
-    events: list[dict] = []
+    draft: list[dict] = []
 
     for feature in features:
         props = feature.get("properties") or {}
@@ -331,7 +346,7 @@ async def fetch_gdacs(
             or props.get("eventId")
             or props.get("episodeid")
             or feature.get("id")
-            or len(events)
+            or len(draft)
         )
         name = (
             props.get("name")
@@ -359,30 +374,38 @@ async def fetch_gdacs(
         if isinstance(url, dict):
             url = url.get("report") or url.get("geometry") or ""
 
-        hurricane_path = None
-        if eventlist.upper() == "TC":
-            hurricane_path = await _fetch_gdacs_track(
-                session, "TC", str(eid_raw)
-            )
-            if not hurricane_path:
-                hurricane_path = [[lon, lat]]
+        hurricane_path = _path_from_geometry(feature) if eventlist.upper() == "TC" else None
 
-        events.append(
-            _point_event(
-                event_id=f"gdacs-{eventlist.lower()}-{eid_raw}",
-                event_type=mapped_type,
-                lon=lon,
-                lat=lat,
-                time=str(fromdate),
-                title=str(name)[:200],
-                magnitude=mag,
-                alert_level=alert,
-                source_url=str(url),
-                hurricane_path=hurricane_path,
-                extra={"gdacs_eventlist": eventlist},
-            )
+        draft.append(
+            {
+                "eid": str(eid_raw),
+                "event": _point_event(
+                    event_id=f"gdacs-{eventlist.lower()}-{eid_raw}",
+                    event_type=mapped_type,
+                    lon=lon,
+                    lat=lat,
+                    time=str(fromdate),
+                    title=str(name)[:200],
+                    magnitude=mag,
+                    alert_level=alert,
+                    source_url=str(url),
+                    hurricane_path=hurricane_path or ([[lon, lat]] if eventlist.upper() == "TC" else None),
+                    extra={"gdacs_eventlist": eventlist},
+                ),
+            }
         )
-    return events
+
+    # Enrich TC tracks concurrently (capped) when search geometry had no LineString
+    if eventlist.upper() == "TC" and draft:
+        need = [d for d in draft if len(d["event"]["properties"].get("hurricane_path") or []) <= 1]
+        tracks = await asyncio.gather(
+            *[_fetch_gdacs_track(session, "TC", d["eid"]) for d in need[:8]]
+        )
+        for d, track in zip(need[:8], tracks):
+            if track:
+                d["event"]["properties"]["hurricane_path"] = track
+
+    return [d["event"] for d in draft]
 
 
 async def fetch_usgs_volcanoes(session: aiohttp.ClientSession) -> list[dict]:

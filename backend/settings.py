@@ -33,5 +33,5 @@ USGS_VOLCANO_GEOJSON = (
 OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 
 # HTTP client
-HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "45"))
+HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "30"))
 HTTP_USER_AGENT = "DangerSphere/1.0 (+https://github.com/ObiRonKenobi/DangerSphere)"
