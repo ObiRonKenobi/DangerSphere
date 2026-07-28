@@ -386,7 +386,7 @@ async def fetch_gdacs(
 
 
 async def fetch_usgs_volcanoes(session: aiohttp.ClientSession) -> list[dict]:
-    """US elevated volcanoes from USGS VHP GeoJSON."""
+    """US elevated volcanoes from USGS VHP GeoJSON (yellow/orange/red only)."""
     try:
         async with session.get(USGS_VOLCANO_GEOJSON) as resp:
             if resp.status != 200:
@@ -401,6 +401,7 @@ async def fetch_usgs_volcanoes(session: aiohttp.ClientSession) -> list[dict]:
     if not isinstance(features, list):
         return []
 
+    elevated = {"yellow", "orange", "red", "y", "o", "r"}
     events: list[dict] = []
     for feature in features:
         props = feature.get("properties") or {}
@@ -408,11 +409,19 @@ async def fetch_usgs_volcanoes(session: aiohttp.ClientSession) -> list[dict]:
         coords = geom.get("coordinates") or []
         if len(coords) < 2:
             continue
+        color = (props.get("colorCode") or props.get("color") or "").lower()
+        alert_level = (props.get("alertLevel") or "").lower()
+        # Only elevated monitors — full US catalog is too noisy for the globe
+        if color not in elevated and alert_level not in {
+            "advisory",
+            "watch",
+            "warning",
+        }:
+            continue
         lon, lat = float(coords[0]), float(coords[1])
         code = props.get("volcanoCd") or props.get("vnum") or props.get("id") or len(events)
         name = props.get("volcanoName") or props.get("name") or "Volcano"
-        color = (props.get("colorCode") or props.get("color") or "").lower() or None
-        alert = (props.get("alertLevel") or "").lower() or color
+        alert = alert_level or color or None
         mag = float(ALERT_ORDINAL.get(color or "", 2)) if color else 2.0
         events.append(
             _point_event(
@@ -424,7 +433,8 @@ async def fetch_usgs_volcanoes(session: aiohttp.ClientSession) -> list[dict]:
                 title=f"{name} ({(color or 'elevated').upper()})",
                 magnitude=mag,
                 alert_level=alert,
-                source_url=props.get("url")
+                source_url=props.get("volcanoUrl")
+                or props.get("url")
                 or "https://www.usgs.gov/programs/VHP",
                 extra={"color_code": color, "alert_level": props.get("alertLevel")},
             )
