@@ -1,7 +1,13 @@
-/** Globe.gl initialisation and live layer rendering */
+/** Globe.gl — day/night terminator + hazard layers (no solar-calculator dep) */
 
 import Globe from "globe.gl";
-import * as THREE from "three";
+import {
+  ShaderMaterial,
+  TextureLoader,
+  Vector2,
+  SRGBColorSpace,
+  MeshLambertMaterial,
+} from "three";
 import {
   filterEvents,
   toCityMarkers,
@@ -13,18 +19,103 @@ import { showDetail } from "./ui.js";
 
 let globe;
 let radarTiles = [];
-const textureLoader = new THREE.TextureLoader();
+let dayNightMaterial = null;
+
+const TEX = {
+  day: "https://cdn.jsdelivr.net/npm/three-globe/example/img/earth-day.jpg",
+  night: "https://cdn.jsdelivr.net/npm/three-globe/example/img/earth-night.jpg",
+  bump: "https://cdn.jsdelivr.net/npm/three-globe/example/img/earth-topology.png",
+  sky: "https://cdn.jsdelivr.net/npm/three-globe/example/img/night-sky.png",
+};
+
+const textureLoader = new TextureLoader();
 textureLoader.crossOrigin = "anonymous";
+
+/** Approximate subsolar [lng, lat] — good enough for terminator visuals */
+function sunPosAt(dt = Date.now()) {
+  const d = new Date(dt);
+  const start = Date.UTC(d.getUTCFullYear(), 0, 0);
+  const dayOfYear = (dt - start) / 864e5;
+  const decl =
+    23.44 * Math.sin((2 * Math.PI * (284 + dayOfYear)) / 365.25);
+  const hours = d.getUTCHours() + d.getUTCMinutes() / 60 + d.getUTCSeconds() / 3600;
+  let lng = 180 - hours * 15;
+  while (lng < -180) lng += 360;
+  while (lng > 180) lng -= 360;
+  return [lng, decl];
+}
+
+const dayNightShader = {
+  vertexShader: `
+    varying vec3 vNormal;
+    varying vec2 vUv;
+    void main() {
+      vNormal = normalize(normalMatrix * normal);
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: `
+    #define PI 3.141592653589793
+    uniform sampler2D dayTexture;
+    uniform sampler2D nightTexture;
+    uniform vec2 sunPosition;
+    uniform vec2 globeRotation;
+    varying vec3 vNormal;
+    varying vec2 vUv;
+
+    float toRad(in float a) { return a * PI / 180.0; }
+
+    vec3 Polar2Cartesian(in vec2 c) {
+      float theta = toRad(90.0 - c.x);
+      float phi = toRad(90.0 - c.y);
+      return vec3(
+        sin(phi) * cos(theta),
+        cos(phi),
+        sin(phi) * sin(theta)
+      );
+    }
+
+    void main() {
+      float invLon = toRad(globeRotation.x);
+      float invLat = -toRad(globeRotation.y);
+      mat3 rotX = mat3(
+        1.0, 0.0, 0.0,
+        0.0, cos(invLat), -sin(invLat),
+        0.0, sin(invLat), cos(invLat)
+      );
+      mat3 rotY = mat3(
+        cos(invLon), 0.0, sin(invLon),
+        0.0, 1.0, 0.0,
+        -sin(invLon), 0.0, cos(invLon)
+      );
+      vec3 rotatedSunDirection = rotX * rotY * Polar2Cartesian(sunPosition);
+      float intensity = dot(normalize(vNormal), normalize(rotatedSunDirection));
+      vec4 dayColor = texture2D(dayTexture, vUv);
+      vec4 nightColor = texture2D(nightTexture, vUv);
+      float blendFactor = smoothstep(-0.1, 0.1, intensity);
+      gl_FragColor = mix(nightColor, dayColor, blendFactor);
+    }
+  `,
+};
 
 export function getGlobe() {
   return globe;
 }
 
+function startDayNight(material) {
+  const tick = () => {
+    if (material) {
+      material.uniforms.sunPosition.value.set(...sunPosAt());
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
 export function initGlobe(container) {
   globe = Globe()(container)
-    .globeImageUrl("//unpkg.com/three-globe/example/img/earth-night.jpg")
-    .bumpImageUrl("//unpkg.com/three-globe/example/img/earth-topology.png")
-    .backgroundImageUrl("//unpkg.com/three-globe/example/img/night-sky.png")
+    .backgroundImageUrl(TEX.sky)
     .showAtmosphere(true)
     .atmosphereColor("#2fe8ff")
     .atmosphereAltitude(0.18)
@@ -43,11 +134,14 @@ export function initGlobe(container) {
     .pathPointLat((p) => p[0])
     .pathPointLng((p) => p[1])
     .pathColor("color")
-    .pathStroke(1.2)
+    .pathStroke(1.5)
     .pathDashLength(0.6)
     .pathDashGap(0.15)
     .pathDashAnimateTime(4000)
     .htmlElementsData([])
+    .htmlLat("lat")
+    .htmlLng("lng")
+    .htmlAltitude(0.012)
     .htmlElement((d) => {
       const el = document.createElement("div");
       if (d.cls?.includes("volcano")) {
@@ -75,15 +169,42 @@ export function initGlobe(container) {
       }
       return el;
     })
-    .htmlElementVisibilityModifier((el, isVisible) => {
-      el.style.opacity = isVisible ? 1 : 0;
-    })
     .tilesData([])
     .tileLat("lat")
     .tileLng("lng")
     .tileWidth("width")
     .tileAltitude(0.01)
     .tileMaterial("material");
+
+  // Immediate fallback so we never sit on black/night-only while shaders load
+  globe.globeImageUrl(TEX.day).bumpImageUrl(TEX.bump);
+
+  Promise.all([
+    textureLoader.loadAsync(TEX.day),
+    textureLoader.loadAsync(TEX.night),
+  ])
+    .then(([dayTexture, nightTexture]) => {
+      dayTexture.colorSpace = SRGBColorSpace;
+      nightTexture.colorSpace = SRGBColorSpace;
+      dayNightMaterial = new ShaderMaterial({
+        uniforms: {
+          dayTexture: { value: dayTexture },
+          nightTexture: { value: nightTexture },
+          sunPosition: { value: new Vector2(...sunPosAt()) },
+          globeRotation: { value: new Vector2() },
+        },
+        vertexShader: dayNightShader.vertexShader,
+        fragmentShader: dayNightShader.fragmentShader,
+      });
+      globe.globeMaterial(dayNightMaterial);
+      globe.onZoom(({ lng, lat }) => {
+        dayNightMaterial.uniforms.globeRotation.value.set(lng, lat);
+      });
+      startDayNight(dayNightMaterial);
+    })
+    .catch((err) => {
+      console.warn("Day/night shader failed; keeping day map", err);
+    });
 
   const controls = globe.controls();
   controls.autoRotate = true;
@@ -114,20 +235,8 @@ export function applyLayers({ events, cities, layers, onCityClick }) {
   if (!globe) return;
 
   const visible = filterEvents(events, layers);
-
-  const points =
-    layers.wildfire || layers.hurricane
-      ? toPointMarkers(
-          visible.filter((e) => {
-            if (e.type === "wildfire") return layers.wildfire;
-            if (e.type === "hurricane") return layers.hurricane;
-            return false;
-          })
-        )
-      : [];
-
+  const points = toPointMarkers(visible, layers);
   const paths = layers.hurricane ? toHurricanePaths(visible) : [];
-
   const htmlHazards = toHtmlHazards(
     visible.filter((e) => {
       if (e.type === "earthquake") return layers.earthquake;
@@ -136,7 +245,6 @@ export function applyLayers({ events, cities, layers, onCityClick }) {
       return false;
     })
   );
-
   const cityHtml = layers.cities
     ? toCityMarkers(cities).map((c) => ({
         ...c,
@@ -156,9 +264,9 @@ function loadTileMaterial(url) {
     textureLoader.load(
       url,
       (tex) => {
-        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.colorSpace = SRGBColorSpace;
         resolve(
-          new THREE.MeshLambertMaterial({
+          new MeshLambertMaterial({
             map: tex,
             transparent: true,
             opacity: 0.65,
@@ -172,15 +280,11 @@ function loadTileMaterial(url) {
   });
 }
 
-/**
- * RainViewer free radar — coarse global tiles for globe overview (max free z≈7).
- */
 export async function setRadarFromRainViewer(mapsJson) {
   if (!globe || !mapsJson) {
     radarTiles = [];
     return;
   }
-
   const host = mapsJson.host;
   const frames = mapsJson.radar?.past || [];
   if (!frames.length) {
@@ -192,7 +296,6 @@ export async function setRadarFromRainViewer(mapsJson) {
   const n = 2 ** z;
   const width = 360 / n;
   const pending = [];
-
   for (let x = 0; x < n; x++) {
     for (let y = 0; y < n; y++) {
       const lng = ((x + 0.5) / n) * 360 - 180;
@@ -202,16 +305,12 @@ export async function setRadarFromRainViewer(mapsJson) {
       const url = `${host}${path}/256/${z}/${x}/${y}/2/1_1.png`;
       pending.push(
         loadTileMaterial(url).then((material) =>
-          material
-            ? { lat, lng, width, material, url }
-            : null
+          material ? { lat, lng, width, material, url } : null
         )
       );
     }
   }
-
-  const loaded = await Promise.all(pending);
-  radarTiles = loaded.filter(Boolean);
+  radarTiles = (await Promise.all(pending)).filter(Boolean);
 }
 
 export function clearRadar() {

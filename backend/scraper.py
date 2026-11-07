@@ -120,71 +120,56 @@ async def fetch_usgs(session: aiohttp.ClientSession) -> list[dict]:
     return events
 
 
-def _firms_url() -> str:
+def _firms_csv_url(source: str, area: str) -> str:
     return (
-        f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/"
-        f"{NASA_FIRMS_MAP_KEY}/{NASA_FIRMS_SOURCE}/world/{NASA_FIRMS_DAY_RANGE}"
+        "https://firms.modaps.eosdis.nasa.gov/api/area/csv/"
+        f"{NASA_FIRMS_MAP_KEY}/{source}/{area}/{NASA_FIRMS_DAY_RANGE}"
     )
 
 
-async def fetch_nasa_firms(session: aiohttp.ClientSession) -> tuple[list[dict], str]:
-    """Fetch wildfire hotspots. Returns (events, status)."""
-    if not NASA_FIRMS_MAP_KEY:
-        logger.warning("NASA_FIRMS_MAP_KEY not set - skipping wildfire scrape")
-        return [], "skipped_no_key"
-
-    async with session.get(_firms_url()) as resp:
-        text = await resp.text()
-        if resp.status != 200:
-            logger.error("FIRMS HTTP %s: %s", resp.status, text[:200])
-            return [], f"error_http_{resp.status}"
-        if text.strip().lower().startswith("<!DOCTYPE") or "Invalid" in text[:80]:
-            logger.error("FIRMS rejected request: %s", text[:200])
-            return [], "error_invalid_key"
-
-    reader = csv.DictReader(io.StringIO(text))
+def _parse_firms_csv(body: str, source: str) -> list[dict]:
+    if not body or body.strip().lower().startswith("<!doctype") or "Invalid" in body[:80]:
+        return []
+    reader = csv.DictReader(io.StringIO(body))
     events: list[dict] = []
     for row in reader:
+        row_l = {
+            (k or "").strip().lstrip(chr(0xFEFF)).lower(): v for k, v in row.items()
+        }
         try:
-            lat = float(row["latitude"])
-            lon = float(row["longitude"])
-        except (KeyError, ValueError, TypeError):
+            lat = float(row_l.get("latitude") or row_l.get("lat"))
+            lon = float(row_l.get("longitude") or row_l.get("lon"))
+        except (TypeError, ValueError):
             continue
-
-        conf = (row.get("confidence") or "").strip().lower()
-        # VIIRS: nominal/high or numeric; MODIS: 0-100
+        conf = str(row_l.get("confidence") or "").strip().lower()
         if conf in {"l", "low"}:
             continue
-        if conf.isdigit() and int(conf) < 50:
+        if conf.isdigit() and int(conf) < 30:
             continue
-
         brightness = None
         for key in ("bright_ti4", "brightness", "bright_t31"):
-            if row.get(key):
+            if row_l.get(key):
                 try:
-                    brightness = float(row[key])
+                    brightness = float(row_l[key])
                     break
                 except ValueError:
                     pass
-
         frp = None
-        if row.get("frp"):
+        if row_l.get("frp"):
             try:
-                frp = float(row["frp"])
+                frp = float(row_l["frp"])
             except ValueError:
                 pass
-
-        acq_date = row.get("acq_date") or ""
-        acq_time = (row.get("acq_time") or "0000").zfill(4)
+        acq_date = row_l.get("acq_date") or ""
+        acq_time = (row_l.get("acq_time") or "0000").zfill(4)
         try:
-            dt = datetime.strptime(
-                f"{acq_date}{acq_time}", "%Y-%m-%d%H%M"
-            ).replace(tzinfo=timezone.utc)
+            dt = datetime.strptime(f"{acq_date}{acq_time}", "%Y-%m-%d%H%M").replace(
+                tzinfo=timezone.utc
+            )
             time_iso = dt.isoformat()
         except ValueError:
             time_iso = _utcnow_iso()
-
-        sat = row.get("satellite") or NASA_FIRMS_SOURCE
+        sat = row_l.get("satellite") or source
         eid = f"firms-{acq_date}-{acq_time}-{lat:.3f}-{lon:.3f}-{sat}"
         events.append(
             _point_event(
@@ -197,19 +182,175 @@ async def fetch_nasa_firms(session: aiohttp.ClientSession) -> tuple[list[dict], 
                 magnitude=frp if frp is not None else brightness,
                 fire_radiance=frp if frp is not None else brightness,
                 source_url="https://firms.modaps.eosdis.nasa.gov/",
-                extra={"confidence": conf, "satellite": sat},
+                extra={"confidence": conf, "satellite": sat, "source": source},
+            )
+        )
+    return events
+
+
+def _firms_na_areas() -> list[tuple[str, str]]:
+    """Priority North America boxes — fetched BEFORE world so USA/Canada aren't starved."""
+    return [
+        ("conus", "-125,24,-66,50"),
+        ("canada", "-141,41,-52,84"),
+        ("alaska", "-170,54,-129,72"),
+        ("mexico", "-118,14,-86,33"),
+    ]
+
+
+async def fetch_nasa_firms(session: aiohttp.ClientSession) -> tuple[list[dict], str]:
+    """NA-first FIRMS: regional US/Canada pulls, then world fill."""
+    import os
+
+    if not NASA_FIRMS_MAP_KEY:
+        logger.warning("NASA_FIRMS_MAP_KEY not set - skipping wildfire scrape")
+        return [], "skipped_no_key"
+
+    primary = NASA_FIRMS_SOURCE or "VIIRS_SNPP_NRT"
+    sources = [primary]
+    for extra in ("VIIRS_NOAA20_NRT", "LANDSAT_NRT"):
+        if extra not in sources:
+            sources.append(extra)
+    env_sources = os.getenv("NASA_FIRMS_SOURCES", "").strip()
+    if env_sources:
+        sources = [s.strip() for s in env_sources.split(",") if s.strip()]
+
+    merged: list[dict] = []
+    ok = 0
+    # 1) North America first
+    for source in sources:
+        for label, area in _firms_na_areas():
+            if source == "LANDSAT_NRT" and label not in {"conus", "canada", "alaska"}:
+                continue
+            try:
+                async with session.get(_firms_csv_url(source, area)) as resp:
+                    body = await resp.text()
+                    if resp.status != 200:
+                        continue
+                    batch = _parse_firms_csv(body, source)
+                    merged.extend(batch)
+                    ok += 1
+                    logger.info("FIRMS NA %s %s -> %s", source, label, len(batch))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("FIRMS NA fail %s %s: %s", source, label, exc)
+
+    # 2) World fill (remaining seat budget after NA kept)
+    try:
+        async with session.get(_firms_csv_url(primary, "world")) as resp:
+            body = await resp.text()
+            if resp.status == 200:
+                batch = _parse_firms_csv(body, primary)
+                merged.extend(batch)
+                ok += 1
+                logger.info("FIRMS world %s -> %s", primary, len(batch))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("FIRMS world fail: %s", exc)
+
+    if not ok:
+        return [], "error_no_firms"
+
+    # Dedupe + NA-weighted keep
+    best: dict[tuple[int, int], dict] = {}
+    for e in merged:
+        lon, lat = e["geometry"]["coordinates"][:2]
+        key = (int(round(lat * 20)), int(round(lon * 20)))
+        frp = float(e["properties"].get("fire_radiance") or e["properties"].get("magnitude") or 0)
+        prev = best.get(key)
+        prev_frp = 0.0
+        if prev:
+            prev_frp = float(
+                prev["properties"].get("fire_radiance")
+                or prev["properties"].get("magnitude")
+                or 0
+            )
+        if not prev or frp >= prev_frp:
+            best[key] = e
+    uniq = list(best.values())
+
+    def frp_of(e: dict) -> float:
+        return float(e["properties"].get("fire_radiance") or e["properties"].get("magnitude") or 0)
+
+    def is_na(e: dict) -> bool:
+        lon, lat = e["geometry"]["coordinates"][:2]
+        return 14 <= lat <= 84 and -170 <= lon <= -52
+
+    na = sorted([e for e in uniq if is_na(e)], key=frp_of, reverse=True)
+    other = sorted([e for e in uniq if not is_na(e)], key=frp_of, reverse=True)
+    limit = FIRMS_MAX_POINTS
+    # Keep ~60% seats for North America when available
+    na_quota = min(len(na), max(int(limit * 0.60), 2500))
+    picked = na[:na_quota]
+    picked.extend(other[: max(0, limit - len(picked))])
+    logger.info("FIRMS selected %s (NA=%s other=%s)", len(picked), min(len(na), na_quota), len(picked) - min(len(na), na_quota))
+    return picked, "ok"
+
+
+async def fetch_cwfis_hotspots(session: aiohttp.ClientSession) -> tuple[list[dict], str]:
+    """Free NRCan CWFIS last-24h hotspots (Canada + much of western US)."""
+    url = (
+        "https://cwfis.cfs.nrcan.gc.ca/geoserver/public/ows"
+        "?service=WFS&version=1.0.0&request=GetFeature"
+        "&typeName=public:hotspots_last24hrs&outputFormat=json"
+    )
+    try:
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                return [], f"error_http_{resp.status}"
+            data = await resp.json(content_type=None)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("CWFIS fetch failed: %s", exc)
+        return [], f"error_{exc.__class__.__name__}"
+
+    features = data.get("features") if isinstance(data, dict) else None
+    if not isinstance(features, list):
+        return [], "error_bad_geojson"
+
+    events: list[dict] = []
+    for feat in features:
+        props = (feat or {}).get("properties") or {}
+        try:
+            lat = float(props.get("lat"))
+            lon = float(props.get("lon"))
+        except (TypeError, ValueError):
+            continue
+        # Focus North America corridor
+        if not (14 <= lat <= 84 and -170 <= lon <= -50):
+            continue
+        rep = props.get("rep_date") or _utcnow_iso()
+        if isinstance(rep, str) and "T" not in rep:
+            rep = rep.replace(" ", "T")
+            if not rep.endswith("Z") and "+" not in rep:
+                rep += "Z"
+        sensor = props.get("sensor") or props.get("source") or "CWFIS"
+        agency = props.get("agency") or ""
+        hfi = props.get("hfi")
+        try:
+            mag = float(hfi) if hfi is not None else 1.0
+        except (TypeError, ValueError):
+            mag = 1.0
+        eid = f"cwfis-{rep}-{lat:.3f}-{lon:.3f}-{sensor}"
+        events.append(
+            _point_event(
+                event_id=eid,
+                event_type="wildfire",
+                lon=lon,
+                lat=lat,
+                time=str(rep),
+                title=f"CWFIS hotspot ({agency or sensor})",
+                magnitude=mag,
+                fire_radiance=mag,
+                source_url="https://cwfis.cfs.nrcan.gc.ca/",
+                extra={
+                    "source": "CWFIS",
+                    "satellite": sensor,
+                    "agency": agency,
+                    "fwi": props.get("fwi"),
+                },
             )
         )
         if len(events) >= FIRMS_MAX_POINTS:
             break
-
-    # Prefer higher FRP when over cap (already capped in loop; sort+trim if needed)
-    if len(events) > FIRMS_MAX_POINTS:
-        events.sort(
-            key=lambda e: e["properties"].get("fire_radiance") or 0, reverse=True
-        )
-        events = events[:FIRMS_MAX_POINTS]
-
+    logger.info("CWFIS hotspots -> %s NA points", len(events))
     return events, "ok"
 
 
@@ -260,45 +401,110 @@ def _gdacs_type_map(eventlist: str) -> str:
     )
 
 
+_CAT_ORD = {"TD": 1, "TS": 2, "STS": 2, "HU": 3, "TY": 3, "HR": 3, "MH": 4, "ST": 2}
+
+
+def _stitch_tc_lines(features: list) -> tuple[list[list[float]], str | None]:
+    """Stitch GDACS getgeometry LineStrings into a chronological track + trend."""
+    segs: list[tuple[int, list[list[float]], str]] = []
+    for feat in features or []:
+        geom = (feat or {}).get("geometry") or {}
+        if geom.get("type") != "LineString":
+            continue
+        coords = [
+            [float(pt[0]), float(pt[1])]
+            for pt in (geom.get("coordinates") or [])
+            if isinstance(pt, (list, tuple)) and len(pt) >= 2
+        ]
+        if len(coords) < 2:
+            continue
+        props = (feat or {}).get("properties") or {}
+        cls = str(props.get("Class") or "")
+        idx = 0
+        if "Line_Line_" in cls:
+            try:
+                idx = int(cls.rsplit("_", 1)[-1])
+            except ValueError:
+                idx = 0
+        label = str(props.get("polygonlabel") or props.get("label") or "").upper()
+        cat = "TS"
+        for key in ("MH", "HU", "TY", "HR", "STS", "TS", "TD", "ST"):
+            if key in label.split() or label == key:
+                cat = key
+                break
+        segs.append((idx, coords, cat))
+
+    if not segs:
+        return [], None
+
+    # Higher Line_Line_N is older; reverse → past → present → forecast
+    segs.sort(key=lambda s: s[0], reverse=True)
+    path: list[list[float]] = []
+    cats: list[str] = []
+    for _, coords, cat in segs:
+        for pt in coords:
+            if not path or path[-1] != pt:
+                path.append(pt)
+                cats.append(cat)
+
+    trend = None
+    if len(cats) >= 4:
+        early = sum(_CAT_ORD.get(c, 2) for c in cats[: max(2, len(cats) // 4)]) / max(
+            2, len(cats) // 4
+        )
+        late = sum(_CAT_ORD.get(c, 2) for c in cats[-max(2, len(cats) // 4) :]) / max(
+            2, len(cats) // 4
+        )
+        if late - early >= 0.6:
+            trend = "intensifying"
+        elif early - late >= 0.6:
+            trend = "weakening"
+        else:
+            trend = "steady"
+    return path, trend
+
+
 async def _fetch_gdacs_track(
     session: aiohttp.ClientSession, event_type: str, event_id: str
-) -> list[list[float]]:
-    """Best-effort track points from GDACS event detail (hard 12s cap)."""
-    params = {"eventtype": event_type, "eventid": event_id}
+) -> tuple[list[list[float]], str | None]:
+    """Track from GDACS getgeometry polygons API (geteventdata is Point-only)."""
 
-    async def _load() -> list[list[float]]:
-        async with session.get(GDACS_EVENT_URL, params=params) as resp:
+    async def _load() -> tuple[list[list[float]], str | None]:
+        async with session.get(
+            GDACS_EVENT_URL, params={"eventtype": event_type, "eventid": event_id}
+        ) as resp:
             if resp.status != 200:
-                return []
+                return [], None
             data = await resp.json(content_type=None)
-
-        path: list[list[float]] = []
         if not isinstance(data, dict):
-            return path
-        features = data.get("features")
-        if isinstance(features, list):
-            for feat in features:
-                geom = (feat or {}).get("geometry") or {}
-                if geom.get("type") == "LineString":
-                    for pt in geom.get("coordinates") or []:
-                        if len(pt) >= 2:
-                            path.append([float(pt[0]), float(pt[1])])
-                elif geom.get("type") == "Point":
-                    c = geom.get("coordinates") or []
-                    if len(c) >= 2:
-                        path.append([float(c[0]), float(c[1])])
-        geom = data.get("geometry") or {}
-        if geom.get("type") == "LineString":
-            for pt in geom.get("coordinates") or []:
-                if len(pt) >= 2:
-                    path.append([float(pt[0]), float(pt[1])])
-        return path
+            return [], None
+
+        props = data.get("properties") or {}
+        geom_url = ""
+        url = props.get("url") or {}
+        if isinstance(url, dict):
+            geom_url = str(url.get("geometry") or "")
+        if not geom_url:
+            episode = props.get("episodeid") or 1
+            geom_url = (
+                "https://www.gdacs.org/gdacsapi/api/polygons/getgeometry"
+                f"?eventtype={event_type}&eventid={event_id}&episodeid={episode}"
+            )
+
+        async with session.get(geom_url) as resp:
+            if resp.status != 200:
+                return [], None
+            geo = await resp.json(content_type=None)
+        features = geo.get("features") if isinstance(geo, dict) else None
+        if not isinstance(features, list):
+            return [], None
+        return _stitch_tc_lines(features)
 
     try:
-        return await asyncio.wait_for(_load(), timeout=12)
+        return await asyncio.wait_for(_load(), timeout=18)
     except Exception:
         logger.warning("GDACS track skipped for %s %s", event_type, event_id)
-        return []
+        return [], None
 
 
 def _path_from_geometry(feature: dict) -> list[list[float]]:
@@ -401,9 +607,13 @@ async def fetch_gdacs(
         tracks = await asyncio.gather(
             *[_fetch_gdacs_track(session, "TC", d["eid"]) for d in need[:8]]
         )
-        for d, track in zip(need[:8], tracks):
-            if track:
+        for d, track_meta in zip(need[:8], tracks):
+            track, trend = track_meta
+            if track and len(track) > 1:
                 d["event"]["properties"]["hurricane_path"] = track
+            if trend:
+                extra = d["event"]["properties"].setdefault("extra", {})
+                extra["intensity_trend"] = trend
 
     return [d["event"] for d in draft]
 
@@ -484,6 +694,7 @@ async def update_cache() -> dict[str, Any]:
         results = await asyncio.gather(
             _safe_call("usgs", fetch_usgs(session)),
             _safe_call("firms", fetch_nasa_firms(session)),
+            _safe_call("cwfis", fetch_cwfis_hotspots(session)),
             _safe_call("gdacs_tc", fetch_gdacs(session, "TC")),
             _safe_call("gdacs_vo", fetch_gdacs(session, "VO")),
             _safe_call("gdacs_ts", fetch_gdacs(session, "TS")),
@@ -516,6 +727,7 @@ async def update_cache() -> dict[str, Any]:
         "sources": {
             "usgs": sources.get("usgs", "unknown"),
             "firms": sources.get("firms", "unknown"),
+            "cwfis": sources.get("cwfis", "unknown"),
             "gdacs": sources.get("gdacs", "unknown"),
             "usgs_volcano": sources.get("usgs_volcano", "unknown"),
         },

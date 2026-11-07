@@ -1,0 +1,255 @@
+/* Hazard overlays — NEVER put transform on the root node Globe.gl positions.
+   Animations live on an inner .fx element so CSS2D placement is not overwritten. */
+
+.hazard-root {
+  pointer-events: auto;
+  cursor: pointer;
+  position: relative;
+}
+
+.hazard-root .fx {
+  display: block;
+  box-sizing: border-box;
+}
+
+.hazard-badge {
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  transform: translateX(-50%);
+  margin-top: 2px;
+  padding: 1px 4px;
+  font-size: 9px;
+  line-height: 1.2;
+  letter-spacing: 0.04em;
+  font-family: "Share Tech Mono", monospace;
+  color: #d7f7ff;
+  background: rgba(0, 0, 0, 0.72);
+  border: 1px solid rgba(47, 232, 255, 0.35);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* Earthquakes — pulsing rings; size set inline from magnitude */
+.hazard-root.quake .fx {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 77, 94, 0.95);
+  box-shadow: 0 0 12px rgba(255, 77, 94, 0.65);
+  animation: pulseScale 1.8s ease-out infinite;
+}
+
+/* Tsunamis */
+.hazard-root.tsunami .fx {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  border: 2px solid rgba(77, 159, 255, 0.95);
+  box-shadow: 0 0 14px rgba(77, 159, 255, 0.55);
+  animation: pulseScale 2.2s ease-out infinite;
+}
+
+/* Volcanoes — triangle; alert class tints color */
+.hazard-root.volcano .fx {
+  width: 0;
+  height: 0;
+  margin-left: -10px;
+  margin-top: -18px;
+  border-left: 10px solid transparent;
+  border-right: 10px solid transparent;
+  border-bottom: 18px solid rgba(255, 61, 206, 0.95);
+  filter: drop-shadow(0 0 8px rgba(255, 61, 206, 0.85));
+  animation: volcanoGlow 2.4s ease-in-out infinite;
+}
+.hazard-root.volcano.alert-advisory .fx,
+.hazard-root.volcano.alert-yellow .fx,
+.hazard-root.volcano.alert-green .fx {
+  border-bottom-color: #ffe566;
+  filter: drop-shadow(0 0 8px rgba(255, 229, 102, 0.8));
+}
+.hazard-root.volcano.alert-watch .fx {
+  border-bottom-color: #ff8a1f;
+  filter: drop-shadow(0 0 10px rgba(255, 138, 31, 0.9));
+}
+.hazard-root.volcano.alert-orange .fx {
+  border-bottom-color: #ff6a00;
+  filter: drop-shadow(0 0 12px rgba(255, 100, 0, 1));
+  animation-duration: 1.2s;
+}
+.hazard-root.volcano.alert-red .fx {
+  border-bottom-color: #ff2a2a;
+  filter: drop-shadow(0 0 14px rgba(255, 40, 40, 1));
+  animation-duration: 0.8s;
+}
+
+/* Wildfires — ember glow (HTML, capped); denser field uses WebGL points */
+.hazard-root.fire .fx {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ffe566, #ff8a1f 42%, #ff3d00 72%, transparent 78%);
+  box-shadow: 0 0 14px 5px rgba(255, 110, 20, 0.85);
+  animation: fireFlicker 0.85s ease-in-out infinite alternate;
+}
+.hazard-root.fire.fire-mid .fx {
+  box-shadow: 0 0 16px 6px rgba(255, 90, 10, 0.9);
+}
+.hazard-root.fire.fire-hot .fx {
+  background: radial-gradient(circle at 35% 30%, #fff2a8, #ff6a00 40%, #ff1a00 70%, transparent 78%);
+  box-shadow: 0 0 20px 8px rgba(255, 40, 0, 0.95);
+  animation-duration: 0.55s;
+}
+
+@keyframes fireFlicker {
+  from { transform: scale(0.82); opacity: 0.78; }
+  to { transform: scale(1.22); opacity: 1; }
+}
+
+/* Radar exclusive mode — mute other layer toggles */
+body.radar-mode .hud-check.is-disabled {
+  opacity: 0.38;
+  pointer-events: none;
+  filter: grayscale(0.7);
+}
+body.radar-mode .hud-meta #meta-counts::after {
+  content: " · weather mode";
+  color: #4d9fff;
+}
+body.weather-mode #globe-container canvas {
+  filter: saturate(0.75) brightness(0.88) contrast(1.05);
+}
+#panel-weather .hud-check {
+  color: #c8e6ef;
+}
+
+.hud-range {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.hud-radio {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: #c8e6ef;
+  cursor: pointer;
+}
+.hud-radio input {
+  accent-color: #2fe8ff;
+}
+.hud-hint {
+  margin: 0.35rem 0 0;
+  font-size: 0.65rem;
+  line-height: 1.35;
+  color: #6a8a96;
+}
+
+/* Hurricanes — disk size = intensity; alert tints ring */
+.hazard-root.storm .fx {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  border: 2px solid #2fe8ff;
+  background: radial-gradient(circle, rgba(47, 232, 255, 0.35), rgba(47, 232, 255, 0.05) 70%, transparent);
+  box-shadow: 0 0 16px rgba(47, 232, 255, 0.75);
+  animation: stormSpin 3.5s linear infinite;
+  position: relative;
+}
+.hazard-root.storm.alert-orange .fx {
+  border-color: #ff8a1f;
+  background: radial-gradient(circle, rgba(255, 138, 31, 0.4), transparent 70%);
+  box-shadow: 0 0 18px rgba(255, 138, 31, 0.85);
+}
+.hazard-root.storm.alert-red .fx {
+  border-color: #ff4d5e;
+  background: radial-gradient(circle, rgba(255, 77, 94, 0.45), transparent 70%);
+  box-shadow: 0 0 20px rgba(255, 77, 94, 0.9);
+  animation-duration: 2s;
+}
+.hazard-root.storm .fx::after {
+  content: "";
+  position: absolute;
+  inset: 18%;
+  border-radius: 50%;
+  border-top: 2px solid rgba(255, 255, 255, 0.85);
+  border-left: 2px solid transparent;
+}
+
+.storm-dir {
+  position: absolute;
+  left: 50%;
+  top: -10px;
+  width: 0;
+  height: 0;
+  margin-left: -5px;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 10px solid #2fe8ff;
+  transform-origin: 50% 14px;
+  pointer-events: none;
+  filter: drop-shadow(0 0 4px #2fe8ff);
+}
+
+.city-pin {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(215, 247, 255, 0.95);
+  border: 1px solid #2fe8ff;
+  box-shadow: 0 0 10px rgba(47, 232, 255, 0.65);
+  cursor: pointer;
+  pointer-events: auto;
+}
+.city-pin:hover {
+  background: #2fe8ff;
+  box-shadow: 0 0 14px rgba(47, 232, 255, 0.95);
+}
+
+@keyframes pulseScale {
+  0% { transform: scale(0.35); opacity: 1; }
+  100% { transform: scale(2.1); opacity: 0; }
+}
+
+@keyframes volcanoGlow {
+  0%, 100% { filter: drop-shadow(0 0 4px rgba(255, 61, 206, 0.5)); }
+  50% { filter: drop-shadow(0 0 14px rgba(255, 61, 206, 1)); }
+}
+
+@keyframes stormSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.hazard-badge.trend-intensifying {
+  border-color: rgba(255, 77, 94, 0.7);
+  color: #ffb4bb;
+}
+.hazard-badge.trend-weakening {
+  border-color: rgba(77, 159, 255, 0.7);
+  color: #b4d4ff;
+}
+.hazard-badge.vol-orange,
+.hazard-badge.vol-red {
+  border-color: rgba(255, 100, 40, 0.8);
+  color: #ffd0b0;
+}
+.hazard-badge.vol-watch,
+.hazard-badge.vol-yellow {
+  border-color: rgba(255, 200, 60, 0.75);
+  color: #ffe9a8;
+}
+
+#detail-mag div {
+  margin: 0.2rem 0;
+  font-size: 0.72rem;
+  color: #9bb8c4;
+}
+
+.detail-hud a#detail-link {
+  display: inline-block;
+  margin-top: 0.45rem;
+  color: #2fe8ff;
+  font-size: 0.75rem;
+}

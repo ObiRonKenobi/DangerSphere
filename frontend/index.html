@@ -2,12 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>DangerSphere</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;800&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="stylesheet" href="/css/style.css?v=20260820a" />
+  <link rel="stylesheet" href="/css/hazards.css?v=20260820a" />
 </head>
 <body>
   <div id="atmosphere" aria-hidden="true"></div>
@@ -20,23 +21,47 @@
 
   <aside class="hud" id="hud" aria-label="Layer controls">
     <div class="hud-section">
-      <h2 class="hud-label">Layers</h2>
+      <h2 class="hud-label">Mode</h2>
+      <div class="hud-range" role="group" aria-label="View mode">
+        <label class="hud-radio"><input type="radio" name="view-mode" id="mode-hazards" value="hazards" checked /> Hazards</label>
+        <label class="hud-radio"><input type="radio" name="view-mode" id="mode-weather" value="weather" /> Weather</label>
+      </div>
+      <p class="hud-hint">Pick one mode. Weather is near-live cloud + rain (not the hazard list).</p>
+    </div>
+
+    <div class="hud-section" id="panel-hazards">
+      <h2 class="hud-label">When</h2>
+      <div class="hud-range" role="group" aria-label="Time range">
+        <label class="hud-radio"><input type="radio" name="time-range" id="range-1d" value="1d" checked /> Today</label>
+        <label class="hud-radio"><input type="radio" name="time-range" id="range-7d" value="7d" /> Last week</label>
+        <label class="hud-radio"><input type="radio" name="time-range" id="range-30d" value="30d" /> Last month</label>
+      </div>
+      <p class="hud-hint">Today = last ~36h of hazard events.</p>
+      <h2 class="hud-label" style="margin-top:0.75rem">Layers</h2>
       <label class="hud-check"><input type="checkbox" id="layer-earthquakes" checked /> Earthquakes</label>
       <label class="hud-check"><input type="checkbox" id="layer-wildfires" checked /> Wildfires</label>
       <label class="hud-check"><input type="checkbox" id="layer-hurricanes" checked /> Hurricanes</label>
       <label class="hud-check"><input type="checkbox" id="layer-volcanoes" checked /> Volcanoes</label>
       <label class="hud-check"><input type="checkbox" id="layer-tsunamis" checked /> Tsunamis</label>
-      <label class="hud-check"><input type="checkbox" id="layer-radar" /> Radar</label>
       <label class="hud-check"><input type="checkbox" id="layer-cities" checked /> Cities</label>
     </div>
+
+    <div class="hud-section" id="panel-weather" hidden>
+      <h2 class="hud-label">Weather layers</h2>
+      <label class="hud-check"><input type="checkbox" id="wx-clouds" checked /> Cloud cover</label>
+      <label class="hud-check"><input type="checkbox" id="wx-precip" checked /> Precipitation</label>
+      <p class="hud-hint">Clouds = IR / NASA grayscale. Rain = RainViewer Doppler (~5–15 min old).</p>
+    </div>
+
     <div class="hud-section">
       <h2 class="hud-label">City Insights</h2>
       <input type="search" id="city-search" placeholder="Search city…" autocomplete="off" />
       <ul id="city-results" class="city-results" hidden></ul>
     </div>
     <div class="hud-meta" id="hud-meta">
-      <span id="meta-updated">Awaiting cache…</span>
+      <span id="meta-updated">Loading…</span>
       <span id="meta-counts"></span>
+      <span id="meta-error" style="color:#ff4d5e"></span>
     </div>
   </aside>
 
@@ -65,19 +90,13 @@
   </section>
 
   <footer class="attrib">
-    Data: USGS · NASA FIRMS · GDACS · Open-Meteo ·
+    Data: USGS · NASA FIRMS · CWFIS · GDACS · Open-Meteo ·
     <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>
   </footer>
 
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-      "three/": "https://cdn.jsdelivr.net/npm/three@0.160.0/",
-      "globe.gl": "https://cdn.jsdelivr.net/npm/globe.gl@2.33.1/dist/globe.gl.mjs"
-    }
-  }
-  </script>
-  <script type="module" src="/js/main.js"></script>
+  <!-- UMD builds: no import maps (works Chrome / Firefox / Safari / mobile) -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/globe.gl@2.33.1/dist/globe.gl.min.js"></script>
+  <script src="/js/app.js?v=20260820a"></script>
 </body>
 </html>
